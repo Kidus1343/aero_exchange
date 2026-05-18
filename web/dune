@@ -1,0 +1,13 @@
+(executable
+ (name app)
+ (modes js)
+ (libraries
+  core
+  bonsai
+  bonsai.web
+  aero_lib)
+ (preprocess
+  (pps
+   ppx_jane
+   bonsai.ppx_bonsai
+   js_of_ocaml-ppx)))

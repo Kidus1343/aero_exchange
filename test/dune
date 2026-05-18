@@ -1,0 +1,6 @@
+(test
+ (name test_aero_exchange)
+ (libraries 
+  core
+  aero_lib)
+ (preprocess (pps ppx_jane)))

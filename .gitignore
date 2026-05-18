@@ -1,0 +1,36 @@
+# Dune build artifacts
+_build/
+
+# OCaml compiled files
+*.cmi
+*.cmo
+*.cmx
+*.cma
+*.cmxa
+*.cmxs
+*.o
+*.a
+
+# OPAM local switch
+_opam/
+
+# Generated executables
+*.exe
+*.out
+
+# Temporary / editor files
+*.swp
+*.swo
+*~
+
+# IDE settings
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+.env.local

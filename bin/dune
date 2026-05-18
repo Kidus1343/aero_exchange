@@ -1,0 +1,8 @@
+(executable
+ (public_name aero_exchange)
+ (name main)
+ (libraries 
+  core
+  core_unix
+  aero_lib) ; <--- Link your new library here
+ (preprocess (pps ppx_jane)))
