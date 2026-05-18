@@ -2,6 +2,16 @@
 
 A high-performance OCaml-based trading platform featuring real-time order book visualization, market depth analysis, and professional UI for Jane Street-style trading operations.
 
+## Tech Stack
+
+This project is built using the **Jane Street** technology stack, designed for high-performance, robust systems:
+
+- **[Bonsai](https://github.com/janestreet/bonsai)**: Jane Street's functional reactive UI framework for building web applications in OCaml.
+- **[Core](https://github.com/janestreet/core)**: Jane Street's comprehensive standard library overlay, providing industrial-strength data structures and utilities.
+- **[ppx_jane](https://github.com/janestreet/ppx_jane)**: Standard Jane Street syntax extensions for OCaml.
+- **[js_of_ocaml](https://github.com/ocsigen/js_of_ocaml)**: Compiler from OCaml to Javascript, enabling high-performance frontend execution.
+- **[Dune](https://dune.build/)**: The standard composable build system for OCaml projects.
+
 ## Features
 
 ### Core Trading Engine
