@@ -14,11 +14,12 @@ let apply_action _context (model : Model.t) book_ref = function
       Model.empty
 
   | Action.Process_Message msg ->
-      let trades = (match msg.kind with
-        | 1 -> Order_book.add book_ref msg
-        | 2 | 3 | 4 | 5 -> Order_book.remove book_ref msg.id; []
+      let trades = (match Message.get_kind msg with
+        | 1 -> Order_book.add_legacy book_ref msg
+        | 2 | 3 | 4 | 5 -> Order_book.remove book_ref (Message.get_id msg); []
         | _ -> [])
       in
+      Order_book.sync_maps book_ref;
       { model with
         bids = book_ref.bids;
         asks = book_ref.asks;
@@ -26,7 +27,8 @@ let apply_action _context (model : Model.t) book_ref = function
       }
 
   | Action.Place_Order msg ->
-      let trades = Order_book.add book_ref msg in
+      let trades = Order_book.add_legacy book_ref msg in
+      Order_book.sync_maps book_ref;
       { model with
         bids = book_ref.bids;
         asks = book_ref.asks;
@@ -50,26 +52,27 @@ let apply_action _context (model : Model.t) book_ref = function
           | ["B"; qty; price] ->
               let q = Int.of_string qty in
               let p = Int.of_string price in
-              let msg = { Message.time = now_seconds (); kind = 1; id = Random.int_incl 100000 999999; size = q; price = p; side = 1 } in
+              let msg = Message.create ~time:(now_seconds ()) ~kind:1 ~id:(Random.int_incl 100000 999999) ~size:q ~price:p ~side:1 in
               ("✓ BUY " ^ qty ^ " @ " ^ price, Some msg)
           | ["S"; qty; price] ->
               let q = Int.of_string qty in
               let p = Int.of_string price in
-              let msg = { Message.time = now_seconds (); kind = 1; id = Random.int_incl 100000 999999; size = q; price = p; side = 2 } in
+              let msg = Message.create ~time:(now_seconds ()) ~kind:1 ~id:(Random.int_incl 100000 999999) ~size:q ~price:p ~side:2 in
               ("✓ SELL " ^ qty ^ " @ " ^ price, Some msg)
           | ["C"; id] ->
               let i = Int.of_string id in
-              let msg = { Message.time = now_seconds (); kind = 2; id = i; size = 0; price = 0; side = 0 } in
+              let msg = Message.create ~time:(now_seconds ()) ~kind:2 ~id:i ~size:0 ~price:0 ~side:0 in
               ("✓ CX " ^ id, Some msg)
           | _ -> ("✗ ERR: use B/S <qty> <px> or C <id>", None)
         with _ -> ("✗ ERR: parse failed", None)
       in
       let trades = match msg_opt with
         | Some m ->
-            if m.kind = 1 then Order_book.add book_ref m
-            else (Order_book.remove book_ref m.id; [])
+            if Message.get_kind m = 1 then Order_book.add_legacy book_ref m
+            else (Order_book.remove book_ref (Message.get_id m); [])
         | None -> []
       in
+      Order_book.sync_maps book_ref;
       let log = List.take (new_log :: model.cmd_log) 8 in
       { model with
         cmd_input = "";

@@ -41,8 +41,8 @@ let start_timer inject =
       let price = if is_ask then !base_mid_ref + offset else !base_mid_ref - offset in
       let size = if operation = 1 then Random.int_incl 1 40 else 0 in
       let now = now_seconds () in
-      let msg : Message.t = { time = now; kind = 1; id = target_id;
-          size; price; side = (if is_ask then 2 else 1) }
+      let msg : Message.t = Message.create ~time:now ~kind:1 ~id:target_id
+          ~size ~price ~side:(if is_ask then 2 else 1)
       in
       ignore (Ui_effect.Expert.handle (inject (Action.Process_Message msg)));
       (* update base_mid in the Bonsai model occasionally for UI visibility *)
@@ -60,12 +60,12 @@ let run_mock_feed inject =
   base_mid_ref := 50000 + (Random.int 101 - 50);
   List.iter (List.range 1 15) ~f:(fun i ->
     let now = now_seconds () in
-    let bid_msg : Message.t = { time = now; kind = 1; id = i; size = Random.int_incl 5 50;
-      price = !base_mid_ref - (i * 10); side = 1 }
+    let bid_msg : Message.t = Message.create ~time:now ~kind:1 ~id:i ~size:(Random.int_incl 5 50)
+      ~price:(!base_mid_ref - (i * 10)) ~side:1
     in
-    let ask_msg : Message.t = {
-        time = now; kind = 1; id = i + 100; size = Random.int_incl 5 50;
-        price = !base_mid_ref + (i * 10); side = 2 }
+    let ask_msg : Message.t = Message.create
+        ~time:now ~kind:1 ~id:(i + 100) ~size:(Random.int_incl 5 50)
+        ~price:(!base_mid_ref + (i * 10)) ~side:2
     in
     ignore (Ui_effect.Expert.handle (inject (Action.Process_Message bid_msg)));
     ignore (Ui_effect.Expert.handle (inject (Action.Process_Message ask_msg)))) ;

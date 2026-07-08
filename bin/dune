@@ -1,8 +1,10 @@
 (executable
  (public_name aero_exchange)
  (name main)
- (libraries 
+ (libraries
   core
   core_unix
-  aero_lib) ; <--- Link your new library here
+  aero_lib)
+ (ocamlopt_flags (:standard -O3 -unbox-closures))
+ (flags (:standard -extension-universe stable))
  (preprocess (pps ppx_jane)))

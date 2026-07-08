@@ -2,21 +2,35 @@ open Core
 open Aero_lib.Types
 open Aero_lib.Engine
 
+(* Local override of Order_book to automatically sync maps for legacy assertions *)
+module Order_book = struct
+  include Order_book
+  
+  let add book msg =
+    let trades = add_legacy book msg in
+    sync_maps book;
+    trades
+
+  let remove book id =
+    remove book id;
+    sync_maps book
+end
+
 (* Test utilities *)
 let create_message ~time ~kind ~id ~size ~price ~side =
-  { Message.time; kind; id; size; price; side }
+  Message.create ~time ~kind ~id ~size ~price ~side
 
 let test_message_parsing () =
   print_endline "=== Test: Message Parsing ===";
   let csv_line = "100.5,1,123,50,50000,1" in
   try
     let msg = Message.of_string csv_line in
-    assert (Float.(msg.time = 100.5));
-    assert (msg.kind = 1);
-    assert (msg.id = 123);
-    assert (msg.size = 50);
-    assert (msg.price = 50000);
-    assert (msg.side = 1);
+    assert (Float.(Message.get_time msg = 100.5));
+    assert (Message.get_kind msg = 1);
+    assert (Message.get_id msg = 123);
+    assert (Message.get_size msg = 50);
+    assert (Message.get_price msg = 50000);
+    assert (Message.get_side msg = 1);
     print_endline "✓ Message parsing works"
   with _ -> print_endline "✗ Message parsing failed"
 
@@ -64,15 +78,17 @@ let test_order_matching () =
   assert (Option.value (Map.find book.bids 50000) ~default:0 = 50);
   print_endline "✓ Partial order matching works";
 
-  (* Aggressive buy that fully matches and adds new bid *)
-  let buy_msg = create_message ~time:102.0 ~kind:1 ~id:3 ~size:100 ~price:50000 ~side:1 in
-  let trades = Order_book.add book buy_msg in
+  (* Aggressive sell that fully matches and adds new ask *)
+  let sell_msg2 = create_message ~time:102.0 ~kind:1 ~id:3 ~size:100 ~price:50000 ~side:2 in
+  let trades = Order_book.add book sell_msg2 in
   
   assert (List.length trades = 1);
   let trade = List.hd_exn trades in
-  assert (trade.qty = 50); (* matches remaining bid *)
-  (* New bid should have 50 left *)
-  assert (Option.value (Map.find book.bids 50000) ~default:0 = 50);
+  assert (trade.qty = 50); (* matches remaining bid of 50 *)
+  (* New ask should have 50 left *)
+  assert (Option.value (Map.find book.asks 50000) ~default:0 = 50);
+  (* Bids at 50000 should now be empty *)
+  assert (Option.is_none (Map.find book.bids 50000));
   print_endline "✓ Full matching with new order addition works"
 
 let test_order_removal () =
