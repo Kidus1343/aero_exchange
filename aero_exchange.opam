@@ -4,13 +4,13 @@ version: "0.2.0"
 synopsis: "Professional L2 order book and trading system"
 description:
   "Aero-Exchange is a high-performance trading platform featuring order book visualization, market depth analysis, and real-time order management."
-maintainer: ["aero-exchange@jane-street.com"]
-authors: ["Jane Street Trading System"]
+maintainer: ["Kidus Messele Gebregziabher"]
+authors: ["Kidus Messele Gebregziabher"]
 license: "MIT"
 tags: ["trading" "finance" "order-book" "market-depth" "bonsai" "ui"]
-homepage: "https://github.com/aero-exchange/aero-exchange"
-doc: "https://github.com/aero-exchange/aero-exchange"
-bug-reports: "https://github.com/aero-exchange/aero-exchange/issues"
+homepage: "https://github.com/Kidus1343/aero_exchange"
+doc: "https://github.com/Kidus1343/aero_exchange"
+bug-reports: "https://github.com/Kidus1343/aero_exchange/issues"
 depends: [
   "dune" {>= "3.22"}
   "ocaml" {>= "4.14"}
@@ -36,5 +36,5 @@ build: [
     "@doc" {with-doc}
   ]
 ]
-dev-repo: "git+https://github.com/aero-exchange/aero-exchange.git"
+dev-repo: "git+https://github.com/Kidus1343/aero_exchange.git"
 x-maintenance-intent: ["(latest)"]

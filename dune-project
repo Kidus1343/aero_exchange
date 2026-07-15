@@ -7,15 +7,15 @@
 (generate_opam_files true)
 
 (source
- (github aero-exchange/aero-exchange))
+ (github Kidus1343/aero_exchange))
 
-(authors "Jane Street Trading System")
+(authors "Kidus Messele Gebregziabher")
 
-(maintainers "aero-exchange@jane-street.com")
+(maintainers "Kidus Messele Gebregziabher")
 
 (license MIT)
 
-(documentation https://github.com/aero-exchange/aero-exchange)
+(documentation https://github.com/Kidus1343/aero_exchange)
 
 (package
  (name aero_exchange)

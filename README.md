@@ -101,10 +101,10 @@ aero-exchange/
 
 ### Prerequisites
 
-- OCaml 4.14+ (or compatible OxCaml toolchain)
+- **The [OxCaml](https://github.com/oxcaml/oxcaml) compiler — required, not optional.** `lib/types.ml` and `lib/engine.ml` use unboxed types (`int#`, `float#`) and the `[@zero_alloc]` attribute, which are OxCaml-specific language extensions. A stock OCaml 4.14 compiler/toolchain will fail to build this code with a syntax error; you need an opam switch created against OxCaml's own compiler + repo (see the OxCaml repo's README for switch setup, e.g. `opam switch create <name> --repos oxcaml=git+https://github.com/oxcaml/opam-repository.git,default 5.2.0+ox` — check upstream for the current recommended switch name/version).
 - Dune 3.22+
 - OPAM package manager
-- Core, Bonsai, Bonsai.Web libraries
+- Core, Bonsai, Bonsai.Web libraries (installed into the OxCaml switch above)
 
 ### Performance-Oriented Build Notes
 
