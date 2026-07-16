@@ -8,40 +8,45 @@ module Order_book : sig
     mutable volume_at_price : int Int.Map.t;
     orders                  : Order.t Hashtbl.M(Int).t;
 
-    (* unboxed flat arrays — OxCaml int#/float# *)
-    orders_id    : int# array;
-    orders_price : int# array;
-    orders_qty   : int# array;
-    orders_side  : int# array;
-    orders_next  : int# array;
-    orders_prev  : int# array;
+    (* Flat arrays, plain int/float. Plain OCaml `int` is already an
+       unboxed machine word, so there's no boxed representation to
+       eliminate here — no OxCaml-specific type buys anything on
+       these fields. See engine.ml for where float# genuinely helps
+       (the scalar timestamp threaded through the matching loop). *)
+    orders_id    : int array;
+    orders_price : int array;
+    orders_qty   : int array;
+    orders_side  : int array;
+    orders_next  : int array;
+    orders_prev  : int array;
     mutable free_head : int;
 
-    tbl_keys : int# array;
-    tbl_vals : int# array;
+    tbl_keys : int array;
+    tbl_vals : int array;
 
-    bids_price : int# array; bids_qty : int# array;
-    bids_head  : int# array; bids_tail : int# array;
+    bids_price : int array; bids_qty : int array;
+    bids_head  : int array; bids_tail : int array;
     mutable bids_count : int;
 
-    asks_price : int# array; asks_qty : int# array;
-    asks_head  : int# array; asks_tail : int# array;
+    asks_price : int array; asks_qty : int array;
+    asks_head  : int array; asks_tail : int array;
     mutable asks_count : int;
 
-    vol_price : int# array; vol_qty : int# array;
+    vol_price : int array; vol_qty : int array;
     mutable vol_count : int;
 
-    trades_price : int# array;
-    trades_qty   : int# array;
-    trades_side  : int# array;
-    trades_time  : float# array;
+    trades_price : int array;
+    trades_qty   : int array;
+    trades_side  : int array;
+    trades_time  : float array;
     mutable trades_count : int;
   }
 
   val create   : unit -> t
   val reset    : t -> unit
 
-  (** Hot path — zero allocation, OxCaml [@zero_alloc] verified *)
+  (** Hot path — annotated [@zero_alloc] in engine.ml; building under the
+      real OxCaml compiler statically checks/enforces that guarantee. *)
   val add    : t -> Message.t -> int   (* returns # new trades *)
   val remove : t -> int -> unit
 

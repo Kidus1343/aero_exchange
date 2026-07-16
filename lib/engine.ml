@@ -10,6 +10,17 @@ module Order_book = struct
   let tbl_mask        = tbl_size - 1
 
   (* ── Book state ───────────────────────────────────────────── *)
+  (* Correction from an earlier revision: fields here used to be
+     typed "int# array", following an invented "Int#" module that
+     doesn't exist in OxCaml. Plain OCaml `int` is already an
+     unboxed machine word (a tagged immediate) — there is no boxed
+     representation to eliminate, so a plain `int array` already
+     gives flat, zero-allocation storage and access. OxCaml's real
+     unboxed-number modules (Float_u, Int32_u, Int64_u, Nativeint_u)
+     exist for types that are *normally* boxed; `int` isn't one of
+     them. The one field that's genuinely a candidate for OxCaml's
+     float# is the trade timestamp threaded through the recursive
+     matching loop below — see `match_loop`.                      *)
   type t = {
     (* legacy maps kept for Bonsai UI — never touched on hot path *)
     mutable bids          : int Int.Map.t;
@@ -17,62 +28,67 @@ module Order_book = struct
     mutable volume_at_price : int Int.Map.t;
     orders                : Order.t Hashtbl.M(Int).t;
 
-    (* ── flat unboxed order pool ─────────────────────────────
-       OxCaml: int# array stores raw machine words with no
-       per-element boxing.  Every array access is a single
-       load/store with no indirection.                        *)
-    orders_id    : int# array;
-    orders_price : int# array;
-    orders_qty   : int# array;
-    orders_side  : int# array;
-    orders_next  : int# array;   (* free-list / linked-list next *)
-    orders_prev  : int# array;
+    (* ── flat order pool ──────────────────────────────────────
+       Plain int arrays: already a flat, non-allocating layout in
+       OCaml (no boxing to begin with), so every access here is a
+       single load/store with no indirection and no OxCaml needed. *)
+    orders_id    : int array;
+    orders_price : int array;
+    orders_qty   : int array;
+    orders_side  : int array;
+    orders_next  : int array;   (* free-list / linked-list next *)
+    orders_prev  : int array;
     mutable free_head : int;     (* head of free-slot singly-linked list *)
 
     (* ── open-addressed hash table: id -> slot index ───────── *)
-    tbl_keys : int# array;
-    tbl_vals : int# array;
+    tbl_keys : int array;
+    tbl_vals : int array;
 
     (* ── bid / ask price levels (sorted contiguous arrays) ──── *)
-    bids_price : int# array;
-    bids_qty   : int# array;
-    bids_head  : int# array;
-    bids_tail  : int# array;
+    bids_price : int array;
+    bids_qty   : int array;
+    bids_head  : int array;
+    bids_tail  : int array;
     mutable bids_count : int;
 
-    asks_price : int# array;
-    asks_qty   : int# array;
-    asks_head  : int# array;
-    asks_tail  : int# array;
+    asks_price : int array;
+    asks_qty   : int array;
+    asks_head  : int array;
+    asks_tail  : int array;
     mutable asks_count : int;
 
     (* ── volume-at-price tracker ─────────────────────────────  *)
-    vol_price : int# array;
-    vol_qty   : int# array;
+    vol_price : int array;
+    vol_qty   : int array;
     mutable vol_count : int;
 
     (* ── pre-allocated trade ring buffer ─────────────────────  *)
-    trades_price : int# array;
-    trades_qty   : int# array;
-    trades_side  : int# array;
-    trades_time  : float# array;  (* OxCaml: unboxed float array *)
+    trades_price : int array;
+    trades_qty   : int array;
+    trades_side  : int array;
+    trades_time  : float array;  (* stock OCaml already stores float
+                                     arrays flat/unboxed; the OxCaml
+                                     win is keeping the *scalar* ts
+                                     value unboxed while it's threaded
+                                     through the recursive hot loop,
+                                     not the array storage itself.   *)
     mutable trades_count : int;
   }
 
-  (* ── Helpers: unbox / rebox ───────────────────────────────── *)
-  let[@inline] ug a i       = Int#.to_int   (Array.unsafe_get a i)
-  let[@inline] us a i v     = Array.unsafe_set a i (Int#.of_int v)
-  let[@inline] ufg a i      = Float#.to_float (Array.unsafe_get a i)
-  let[@inline] ufs a i v    = Array.unsafe_set a i (Float#.of_float v)
-  let[@inline] mk_int_arr n = Array.init n ~f:(fun _ -> Int#.of_int 0)
-  let[@inline] mk_flt_arr n = Array.init n ~f:(fun _ -> Float#.of_float 0.0)
+  (* ── Helpers ──────────────────────────────────────────────── *)
+  let[@inline] ug a i       = Array.unsafe_get a i
+  let[@inline] us a i v     = Array.unsafe_set a i v
+  let[@inline] ufg a i      = Array.unsafe_get a i
+  let[@inline] ufs a i v    = Array.unsafe_set a i v
+  let[@inline] mk_int_arr n = Array.create ~len:n 0
+  let[@inline] mk_flt_arr n = Array.create ~len:n 0.0
 
   let create () =
     let orders_next = mk_int_arr max_orders in
     for i = 0 to max_orders - 2 do us orders_next i (i + 1) done;
     us orders_next (max_orders - 1) (-1);
-    let tbl_keys = Array.init tbl_size ~f:(fun _ -> Int#.of_int (-1)) in
-    let tbl_vals = Array.init tbl_size ~f:(fun _ -> Int#.of_int (-1)) in
+    let tbl_keys = Array.create ~len:tbl_size (-1) in
+    let tbl_vals = Array.create ~len:tbl_size (-1) in
     { bids = Int.Map.empty; asks = Int.Map.empty;
       volume_at_price = Int.Map.empty;
       orders = Hashtbl.create (module Int);
@@ -81,16 +97,16 @@ module Order_book = struct
       orders_qty   = mk_int_arr max_orders;
       orders_side  = mk_int_arr max_orders;
       orders_next;
-      orders_prev  = Array.init max_orders ~f:(fun _ -> Int#.of_int (-1));
+      orders_prev  = Array.create ~len:max_orders (-1);
       free_head    = 0;
       tbl_keys; tbl_vals;
       bids_price = mk_int_arr max_levels; bids_qty = mk_int_arr max_levels;
-      bids_head  = Array.init max_levels ~f:(fun _ -> Int#.of_int (-1));
-      bids_tail  = Array.init max_levels ~f:(fun _ -> Int#.of_int (-1));
+      bids_head  = Array.create ~len:max_levels (-1);
+      bids_tail  = Array.create ~len:max_levels (-1);
       bids_count = 0;
       asks_price = mk_int_arr max_levels; asks_qty = mk_int_arr max_levels;
-      asks_head  = Array.init max_levels ~f:(fun _ -> Int#.of_int (-1));
-      asks_tail  = Array.init max_levels ~f:(fun _ -> Int#.of_int (-1));
+      asks_head  = Array.create ~len:max_levels (-1);
+      asks_tail  = Array.create ~len:max_levels (-1);
       asks_count = 0;
       vol_price  = mk_int_arr max_levels; vol_qty = mk_int_arr max_levels;
       vol_count  = 0;
@@ -207,8 +223,13 @@ module Order_book = struct
 
   (* ── Core matching loop ────────────────────────────────────────
      All arguments passed explicitly — no closure capture, no alloc.
-     OxCaml's [@zero_alloc] checker verifies this statically.      *)
-  let[@zero_alloc] rec match_loop t side price ts remaining =
+     `ts` is kept as OxCaml's unboxed `float#` for the entire
+     recursive descent, so the timestamp never gets reboxed on each
+     match step; it's only converted back to a boxed `float` once,
+     at the point it's written into the (boxed) trades_time array.
+     OxCaml's [@zero_alloc] checker verifies the whole function
+     allocates nothing.                                            *)
+  let[@zero_alloc] rec match_loop t side price (ts : float#) remaining =
     if remaining <= 0 then 0
     else begin
       let opp_count = if side = 1 then t.asks_count else t.bids_count in
@@ -232,7 +253,7 @@ module Order_book = struct
             us t.trades_price ti opp_px;
             us t.trades_qty   ti mq;
             us t.trades_side  ti side;
-            ufs t.trades_time ti ts;
+            ufs t.trades_time ti (Float_u.to_float ts);
             t.trades_count <- ti + 1
           end;
 
@@ -266,22 +287,22 @@ module Order_book = struct
      OxCaml: [@zero_alloc] is a *static* compile-time guarantee here;
      the compiler will reject this function if it finds any allocation.  *)
   let[@zero_alloc] add t (msg : Message.t) =
-    let side  = Int#.to_int msg.side  in
-    let price = Int#.to_int msg.price in
-    let size  = Int#.to_int msg.size  in
-    let ts    = Float#.to_float msg.time in
+    let side  = msg.side  in
+    let price = msg.price in
+    let size  = msg.size  in
+    let ts    = msg.time  in  (* already float#, no conversion needed *)
     let t0    = t.trades_count in
     let left  = match_loop t side price ts size in
     if left > 0 then begin
       let slot = alloc_slot t in
       if slot >= 0 then begin
-        us t.orders_id    slot (Int#.to_int msg.id);
+        us t.orders_id    slot msg.id;
         us t.orders_price slot price;
         us t.orders_qty   slot left;
         us t.orders_side  slot side;
         us t.orders_next  slot (-1);
         us t.orders_prev  slot (-1);
-        tbl_put t (Int#.to_int msg.id) slot;
+        tbl_put t msg.id slot;
         if side = 1 then begin
           let idx = bsearch t.bids_price t.bids_count price false in
           if idx >= 0 then begin

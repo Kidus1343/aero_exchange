@@ -1,50 +1,54 @@
 open Core
 
-(* ── Hot-path message — all fields unboxed (OxCaml int#/float#) ── *)
+(* ── Hot-path message ────────────────────────────────────────────
+   Correction: an earlier revision of this file used an invented
+   "int#" / "Int#" unboxed integer type. That doesn't exist in
+   OxCaml — plain OCaml `int` is *already* an unboxed machine word
+   (a tagged immediate), so there is nothing to unbox and no
+   Int_u-style module for it. OxCaml only ships unboxed-number
+   modules for the numeric types that are normally boxed:
+   Float_u, Int32_u, Int64_u, Nativeint_u.
+   The only genuinely-boxed field here is `time` (a float), so
+   that's the only field that benefits from OxCaml's float#. ── *)
 module Message = struct
   type t = {
     time  : float#;
-    kind  : int#;
-    id    : int#;
-    size  : int#;
-    price : int#;
-    side  : int#;
+    kind  : int;
+    id    : int;
+    size  : int;
+    price : int;
+    side  : int;
   }
 
   let create ~time ~kind ~id ~size ~price ~side =
-    { time  = Float#.of_float time;
-      kind  = Int#.of_int kind;
-      id    = Int#.of_int id;
-      size  = Int#.of_int size;
-      price = Int#.of_int price;
-      side  = Int#.of_int side; }
+    { time = Float_u.of_float time; kind; id; size; price; side }
 
-  let get_time  m = Float#.to_float m.time
-  let get_kind  m = Int#.to_int m.kind
-  let get_id    m = Int#.to_int m.id
-  let get_size  m = Int#.to_int m.size
-  let get_price m = Int#.to_int m.price
-  let get_side  m = Int#.to_int m.side
+  let get_time  m = Float_u.to_float m.time
+  let get_kind  m = m.kind
+  let get_id    m = m.id
+  let get_size  m = m.size
+  let get_price m = m.price
+  let get_side  m = m.side
 
   let of_string line =
     match String.split line ~on:',' with
     | [t; k; id; s; p; sd] ->
-      { time  = Float#.of_float (Float.of_string t);
-        kind  = Int#.of_int    (Int.of_string k);
-        id    = Int#.of_int    (Int.of_string id);
-        size  = Int#.of_int    (Int.of_string s);
-        price = Int#.of_int    (Int.of_string p);
-        side  = Int#.of_int    (Int.of_string sd); }
+      { time  = Float_u.of_float (Float.of_string t);
+        kind  = Int.of_string k;
+        id    = Int.of_string id;
+        size  = Int.of_string s;
+        price = Int.of_string p;
+        side  = Int.of_string sd; }
     | _ -> failwith "Malformed CSV"
 
   let sexp_of_t m =
     Sexplib.Sexp.List [
-      Sexplib.Sexp.Atom (Float.to_string (Float#.to_float m.time));
-      Sexplib.Sexp.Atom (Int.to_string   (Int#.to_int    m.kind));
-      Sexplib.Sexp.Atom (Int.to_string   (Int#.to_int    m.id));
-      Sexplib.Sexp.Atom (Int.to_string   (Int#.to_int    m.size));
-      Sexplib.Sexp.Atom (Int.to_string   (Int#.to_int    m.price));
-      Sexplib.Sexp.Atom (Int.to_string   (Int#.to_int    m.side));
+      Sexplib.Sexp.Atom (Float.to_string (Float_u.to_float m.time));
+      Sexplib.Sexp.Atom (Int.to_string m.kind);
+      Sexplib.Sexp.Atom (Int.to_string m.id);
+      Sexplib.Sexp.Atom (Int.to_string m.size);
+      Sexplib.Sexp.Atom (Int.to_string m.price);
+      Sexplib.Sexp.Atom (Int.to_string m.side);
     ]
 end
 
