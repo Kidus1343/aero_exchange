@@ -48,8 +48,11 @@ This project is built using the Jane Street technology stack, designed for high-
 aero-exchange/
 ├── lib/
 │   ├── types.ml                # Core type definitions (Message, Order, Trade)
-│   ├── allocator.ml            # OxCaml Zero-Allocator and memory arenas
-│   ├── engine.ml               # Order matching engine and market analytics
+│   ├── engine.ml                # Order matching engine, arena allocator, and market analytics
+│   ├── engine.mli               # Public interface for Order_book
+│   └── dune
+├── bin/
+│   ├── main.ml                  # CLI entry point
 │   └── dune
 ├── web/
 │   ├── app.ml                  # Main UI component (refactored, modular)
@@ -101,14 +104,14 @@ aero-exchange/
 
 ### Prerequisites
 
-- **The [OxCaml](https://github.com/oxcaml/oxcaml) compiler — required, not optional.** `lib/types.ml` and `lib/engine.ml` use unboxed types (`int#`, `float#`) and the `[@zero_alloc]` attribute, which are OxCaml-specific language extensions. A stock OCaml 4.14 compiler/toolchain will fail to build this code with a syntax error; you need an opam switch created against OxCaml's own compiler + repo (see the OxCaml repo's README for switch setup, e.g. `opam switch create <name> --repos oxcaml=git+https://github.com/oxcaml/opam-repository.git,default 5.2.0+ox` — check upstream for the current recommended switch name/version).
+- **The [OxCaml](https://github.com/oxcaml/oxcaml) compiler — required, not optional.** `lib/engine.ml` uses the `[@zero_alloc]` attribute and OxCaml's unboxed `float#` type (via the `Float_u` module) for the timestamp threaded through the hot matching loop — both OxCaml-specific language extensions that a stock OCaml 4.14 compiler will reject. (Note: plain `int` fields elsewhere are just ordinary OCaml `int` — already an unboxed machine word — so they don't require OxCaml on their own; it's the `float#`/`[@zero_alloc]` pieces that do.) You'll need an opam switch created against OxCaml's own compiler + repo (see the OxCaml repo's README for switch setup, e.g. `opam switch create <name> --repos oxcaml=git+https://github.com/oxcaml/opam-repository.git,default 5.2.0+ox` — check upstream for the current recommended switch name/version).
 - Dune 3.22+
 - OPAM package manager
 - Core, Bonsai, Bonsai.Web libraries (installed into the OxCaml switch above)
 
 ### Performance-Oriented Build Notes
 
-- Native builds use optimized compiler flags such as `-O3` and `-unbox-closures` to favor faster execution.
+- Native builds benefit from flambda's aggressive optimization levels (e.g. `-O3`) and standard inlining flags; check `ocamlfind ocamlopt -config` / your switch's flambda status to confirm which optimization flags are actually active before relying on a specific one.
 - The current engine layout is designed to keep the critical order-book path allocation-light and predictable, leveraging OxCaml memory layout extensions.
 - The benchmark entry point is also structured to focus on the hot-path logic rather than UI or auxiliary processing.
 
@@ -275,9 +278,9 @@ To move from GC mitigation to GC prevention, the engine architecture was rewritt
 
 In standard OCaml, processing a new order typically allocates a new record on the minor heap. In the current iteration of Aero-Exchange:
 
-- **Unboxed Memory Layouts**: By leveraging OxCaml's capacity for unboxed arrays and flat memory representation, we eliminated pointer indirection. Order records and price levels are now stored contiguously in memory.
+- **Flat Array Layouts**: Order records and price levels are stored contiguously in plain `int array`s — already a flat, non-allocating representation in stock OCaml (OCaml's `int` is an unboxed machine word to begin with, so there's no pointer-chasing to eliminate there). The genuinely OxCaml-specific piece is narrower: the hot-path timestamp is kept as an unboxed `float#` (via `Float_u`) for the full recursive matching loop, so it's never reboxed until it's written into the trade log — that's the one field where OxCaml's unboxed numerics do real work here.
 - **The `zero_allocator` Arena**: At startup, the engine pre-allocates a massive, contiguous memory arena (a free-list of pre-initialized order slots).
-- **Zero-Allocation Hot Path**: When a tick arrives, the system no longer calls `malloc` or allocates on the minor heap. Instead, it pulls an available memory slot from the `zero_allocator` ring buffer, mutates it in place, and returns it to the pool upon cancellation or execution.
+- **Zero-Allocation Hot Path**: When a tick arrives, the system no longer calls `malloc` or allocates on the minor heap. Instead, it pulls an available memory slot from the `zero_allocator` free-list, mutates it in place, and returns it to the pool upon cancellation or execution. The `[@zero_alloc]` attribute on these functions asks the OxCaml compiler to statically enforce that guarantee at build time, rather than just hoping profiling won't find an allocation later.
 
 The Result: By completely removing heap allocations during active trading, we eliminated the Minor GC triggers altogether on the hot path. Max tail latency dropped from 28 ms down to predictable microsecond bounds, transforming the engine from a performant software project into a true ultra-low-latency HFT system.
 
@@ -289,6 +292,10 @@ The Result: By completely removing heap allocations during active trading, we el
 | Average Latency | 1.5 μs | ~666k messages/sec throughput. Highly efficient. |
 | Max Latency (Tuned OCaml) | 28 ms | Reduced tail pause via tuned minor heap. |
 | Max Latency (OxCaml / Zero-Alloc) | < 5 μs | Near-zero variance tail latency due to complete GC bypass on the hot path. |
+
+> ⚠️ Measured vs. target figures
+>
+> The Tuned-OCaml row (28 ms max / 1.5 μs average / ~666k msg/sec) reflects the `Gc.set` phase, which runs under a stock OCaml compiler and is straightforward to reproduce locally. The OxCaml/Zero-Alloc row (< 5 μs, 20 ns min) describes what the zero-allocation design targets once built and benchmarked under the real OxCaml compiler; treat it as the design goal the architecture was built for rather than a number to quote as already measured until you've run that benchmark yourself end-to-end.
 
 > ⚠️ A Note on Jitter & VirtualBox
 
