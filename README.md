@@ -11,7 +11,178 @@ This project is built using the Jane Street technology stack, designed for high-
 - **[Core](https://github.com/janestreet/core)**: Jane Street's comprehensive standard library overlay, providing industrial-strength data structures and utilities.
 - **[ppx_jane](https://github.com/janestreet/ppx_jane)**: Standard Jane Street syntax extensions for OCaml.
 - **[js_of_ocaml](https://github.com/ocsigen/js_of_ocaml)**: Compiler from OCaml to JavaScript, enabling high-performance frontend execution.
+- **[Dune](https://dune.build/)**: The standard co# Aero-Exchange: Professional L2 Order Book Trading System
+
+A high-performance OCaml/OxCaml-based trading platform featuring real-time order book visualization, market depth analysis, and professional UI for Jane Street-style trading operations.
+
+## Tech Stack
+
+This project is built using the Jane Street technology stack, designed for high-performance, robust systems, and recently evolved to utilize OxCaml for deterministic memory control:
+
+- **OxCaml**: An advanced dialect/compiler configuration optimizing for zero-allocation hot paths and deterministic memory management.
+- **[Bonsai](https://github.com/janestreet/bonsai)**: Jane Street's functional reactive UI framework for building web applications.
+- **[Core](https://github.com/janestreet/core)**: Jane Street's comprehensive standard library overlay, providing industrial-strength data structures and utilities.
+- **[ppx_jane](https://github.com/janestreet/ppx_jane)**: Standard Jane Street syntax extensions for OCaml.
+- **[js_of_ocaml](https://github.com/ocsigen/js_of_ocaml)**: Compiler from OCaml to JavaScript, enabling high-performance frontend execution.
 - **[Dune](https://dune.build/)**: The standard composable build system for OCaml projects.
+- **Zero-Allocator**: Custom arena allocation strategy bypassing standard Garbage Collection on the critical matching path.
+
+## Features
+
+### Core Trading Engine
+
+- **High-Performance Order Book**: Efficient matching engine with O(1) lookups using hashtables and maps.
+- **Real-Time Order Matching**: Automatic matching of aggressive orders against the book.
+- **Order Management**: Add, remove, and modify orders with full state tracking.
+- **Trade Recording**: Complete trade history with timestamps and price levels.
+- **Market Analytics**: Spread calculation, mid-price, volumes, imbalance ratios, VWAP.
+
+### User Interface
+
+- **L2 Depth Visualization**: Interactive order book display with bid/ask walls.
+- **Market Statistics**: Real-time display of best bid/ask, spreads, and mid-price.
+- **Sparkline Chart**: Historical price movement visualization.
+- **Trade Tape**: Real-time trade execution tape.
+- **Responsive Design**: Mobile-friendly interface with professional styling.
+- **Accessibility**: ARIA labels, keyboard navigation, semantic HTML.
+
+### Simulation Features
+
+- **Synthetic Data Generator**: Configurable market data stream generation.
+- **Speed Control**: Adjustable simulation speed from 10ms to 1000ms+ intervals.
+- **Volatility Control**: Configurable mid-price volatility for realistic scenarios.
+- **Live Order Entry**: Place and cancel orders through the UI with prompts.
+
+## Architecture
+
+### Project Structure
+
+```text
+aero-exchange/
+├── lib/
+│   ├── types.ml                # Core type definitions (Message, Order, Trade)
+│   ├── engine.ml                # Order matching engine, arena allocator, and market analytics
+│   ├── engine.mli               # Public interface for Order_book
+│   └── dune
+├── bin/
+│   ├── main.ml                  # CLI entry point
+│   └── dune
+├── web/
+│   ├── app.ml                  # Main UI component (refactored, modular)
+│   ├── state.ml                # Application state and actions
+│   ├── effects.ml              # Side effects and event handlers
+│   ├── ui.ml                   # UI visualization components
+│   └── dune
+├── test/
+│   ├── test_aero_exchange.ml   # Comprehensive test suite
+│   └── dune
+├── index.html                  # HTML entry point with professional styling
+├── dune-project                # Project configuration
+├── aero_exchange.opam          # OCaml package definition
+└── README.md                   # This file
+```
+
+### Module Organization
+
+- **types.ml**: Defines core data types.
+- **Message.t**: Market data messages (add, remove, modify).
+- **Order.t**: Pending orders in the book.
+- **Trade.t**: Executed trades.
+- **engine.ml**: The matching engine.
+- **Order_book.t**: Main order book structure with bids/asks.
+- **add**: Process incoming orders.
+- **remove**: Cancel orders.
+- **get_spread**, **get_mid_price**, **get_total_bid_volume**, etc.: Market analytics.
+- **validate**: Ensure book integrity.
+- **state.ml**: Bonsai state management.
+- **Model.t**: Application state (bids, asks, trades, settings).
+- **Action.t**: State modifications.
+- **effects.ml**: Side effects and timers.
+- **now_seconds()**: High-resolution timestamps.
+- **start_timer()**: Continuous market data feed.
+- **run_mock_feed()**: Initialize synthetic orders.
+- **toggle_running()**, **adjust_speed()**: User interactions.
+- **ui.ml**: Visualization components.
+- **render_depth_row()**: Single order book level.
+- **render_depth_visual()**: Aggregate depth chart.
+- **render_sparkline()**: Price history.
+- **render_market_stats()**: Key metrics display.
+- **render_last_trade()**: Recent trade highlight.
+- **app.ml**: Main application.
+- **component**: Bonsai UI component.
+- **apply_action**: State reducer.
+- **render_* functions**: Major UI sections.
+
+## Building and Running
+
+### Prerequisites
+
+- **The [OxCaml](https://github.com/oxcaml/oxcaml) compiler — required, not optional.** `lib/engine.ml` uses the `[@zero_alloc]` attribute and OxCaml's unboxed `float#` type (via the `Float_u` module) for the timestamp threaded through the hot matching loop — both OxCaml-specific language extensions that a stock OCaml 4.14 compiler will reject. (Note: plain `int` fields elsewhere are just ordinary OCaml `int` — already an unboxed machine word — so they don't require OxCaml on their own; it's the `float#`/`[@zero_alloc]` pieces that do.) You'll need an opam switch created against OxCaml's own compiler + repo (see the OxCaml repo's README for switch setup, e.g. `opam switch create <name> --repos oxcaml=git+https://github.com/oxcaml/opam-repository.git,default 5.2.0+ox` — check upstream for the current recommended switch name/version).
+- Dune 3.22+
+- OPAM package manager
+- Core, Bonsai, Bonsai.Web libraries (installed into the OxCaml switch above)
+
+### Performance-Oriented Build Notes
+
+- Native builds benefit from flambda's aggressive optimization levels (e.g. `-O3`) and standard inlining flags; check `ocamlfind ocamlopt -config` / your switch's flambda status to confirm which optimization flags are actually active before relying on a specific one.
+- The current engine layout is designed to keep the critical order-book path allocation-light and predictable, leveraging OxCaml memory layout extensions.
+- The benchmark entry point is also structured to focus on the hot-path logic rather than UI or auxiliary processing.
+
+### Build
+
+```bash
+dune build
+```
+
+### Run Tests
+
+```bash
+dune runtest
+```
+
+### Build Web UI
+
+```bash
+dune build web/app.bc.js
+```
+
+### Serve Locally
+
+```bash
+# Option 1: Using Python
+python -m http.server 8000
+
+# Option 2: Using Node
+npx http-server
+```
+
+Then open: http://localhost:8000/index.html
+
+## CSV Data Format & Message Structure
+
+The engine parses raw LOBSTER (Limit Order Book System - The Efficient Reconstructor) market data in CSV format line-by-line:
+
+```text
+time,kind,id,size,price,side
+100.5,1,123,50,50000,1
+```
+
+### Message Field Breakdown
+
+| Column | Description | OCaml Type |
+| --- | --- | --- |
+| 1 | Time: Seconds since midnight (e.g., 34200.017) | float |
+| 2 | Type: 1 = Add, 2/3 = Cancel, 4/5 = Execute | int |
+| 3 | Order ID: Unique ID for the order | int |
+| 4 | Size: Number of shares / quantity | int |
+| 5 | Price: Price (integer format) | int |
+| 6 | Direction: 1 for Buy (Bid), -1 for Sell (Ask) | int |
+
+> ⚠️ Jane Street Design Principle: NEVER Use Floats for Money (Price)
+
+Floating-point numbers (float / double) suffer from binary representation errors (for example, `0.1 + 0.2 = 0.30000000000000004`). In financial systems, a sub-penny error can accumulate into millions of dollars or cause incorrect order matching.
+
+To prevent this, Aero-Exchange represents all prices as integers (multiplied by 10,000 to avoid decimals, i.e., in basis points or hundredths of a cent), keeping calculations 100% precise and highly efficient.I wanmposable build system for OCaml projects.
 - **Zero-Allocator**: Custom arena allocation strategy bypassing standard Garbage Collection on the critical matching path.
 
 ## Features

@@ -4,78 +4,69 @@ open Types
 module Order_book = struct
   (* ── Capacities (init-time only) ─────────────────────────── *)
   let max_orders      = 131072
-  let max_levels      = 2048
+  let max_levels      = 4096
   let max_trades      = 1024
   let tbl_size        = 262144
   let tbl_mask        = tbl_size - 1
+  let price_tbl_size  = 16384
+  let price_tbl_mask  = price_tbl_size - 1
 
-  (* ── Book state ───────────────────────────────────────────── *)
-  (* Correction from an earlier revision: fields here used to be
-     typed "int# array", following an invented "Int#" module that
-     doesn't exist in OxCaml. Plain OCaml `int` is already an
-     unboxed machine word (a tagged immediate) — there is no boxed
-     representation to eliminate, so a plain `int array` already
-     gives flat, zero-allocation storage and access. OxCaml's real
-     unboxed-number modules (Float_u, Int32_u, Int64_u, Nativeint_u)
-     exist for types that are *normally* boxed; `int` isn't one of
-     them. The one field that's genuinely a candidate for OxCaml's
-     float# is the trade timestamp threaded through the recursive
-     matching loop below — see `match_loop`.                      *)
   type t = {
     (* legacy maps kept for Bonsai UI — never touched on hot path *)
-    mutable bids          : int Int.Map.t;
-    mutable asks          : int Int.Map.t;
+    mutable bids            : int Int.Map.t;
+    mutable asks            : int Int.Map.t;
     mutable volume_at_price : int Int.Map.t;
-    orders                : Order.t Hashtbl.M(Int).t;
+    orders                  : Order.t Hashtbl.M(Int).t;
 
-    (* ── flat order pool ──────────────────────────────────────
-       Plain int arrays: already a flat, non-allocating layout in
-       OCaml (no boxing to begin with), so every access here is a
-       single load/store with no indirection and no OxCaml needed. *)
-    orders_id    : int array;
-    orders_price : int array;
-    orders_qty   : int array;
-    orders_side  : int array;
-    orders_next  : int array;   (* free-list / linked-list next *)
-    orders_prev  : int array;
-    mutable free_head : int;     (* head of free-slot singly-linked list *)
+    (* ── flat order pool ── *)
+    orders_id        : int array;
+    orders_price     : int array;
+    orders_qty       : int array;
+    orders_side      : int array;
+    orders_level_idx : int array;
+    orders_next      : int array;   (* doubly linked list inside level / free-list *)
+    orders_prev      : int array;
+    mutable free_head : int;
 
-    (* ── open-addressed hash table: id -> slot index ───────── *)
+    (* ── open-addressed hash table: order_id -> slot index ── *)
     tbl_keys : int array;
     tbl_vals : int array;
 
-    (* ── bid / ask price levels (sorted contiguous arrays) ──── *)
-    bids_price : int array;
-    bids_qty   : int array;
-    bids_head  : int array;
-    bids_tail  : int array;
-    mutable bids_count : int;
+    (* ── open-addressed hash tables: price -> level_idx (split by side) ── *)
+    price_tbl_keys_bid : int array;
+    price_tbl_vals_bid : int array;
+    price_tbl_keys_ask : int array;
+    price_tbl_vals_ask : int array;
 
-    asks_price : int array;
-    asks_qty   : int array;
-    asks_head  : int array;
-    asks_tail  : int array;
-    mutable asks_count : int;
+    (* ── level pool ── *)
+    level_price      : int array;
+    level_qty        : int array;
+    level_head       : int array;
+    level_tail       : int array;
+    level_prev       : int array;   (* doubly-linked active price levels *)
+    level_next       : int array;
+    level_side       : int array;
+    mutable level_free_head : int;
 
-    (* ── volume-at-price tracker ─────────────────────────────  *)
+    mutable best_bid_head : int;
+    mutable best_ask_head : int;
+    mutable bids_count    : int;
+    mutable asks_count    : int;
+
+    (* ── volume-at-price tracker ── *)
     vol_price : int array;
     vol_qty   : int array;
     mutable vol_count : int;
 
-    (* ── pre-allocated trade ring buffer ─────────────────────  *)
+    (* ── pre-allocated trade ring buffer ── *)
     trades_price : int array;
     trades_qty   : int array;
     trades_side  : int array;
-    trades_time  : float array;  (* stock OCaml already stores float
-                                     arrays flat/unboxed; the OxCaml
-                                     win is keeping the *scalar* ts
-                                     value unboxed while it's threaded
-                                     through the recursive hot loop,
-                                     not the array storage itself.   *)
+    trades_time  : float array;
     mutable trades_count : int;
   }
 
-  (* ── Helpers ──────────────────────────────────────────────── *)
+  (* ── Helpers ── *)
   let[@inline] ug a i       = Array.unsafe_get a i
   let[@inline] us a i v     = Array.unsafe_set a i v
   let[@inline] ufg a i      = Array.unsafe_get a i
@@ -87,34 +78,53 @@ module Order_book = struct
     let orders_next = mk_int_arr max_orders in
     for i = 0 to max_orders - 2 do us orders_next i (i + 1) done;
     us orders_next (max_orders - 1) (-1);
+
+    let level_next = mk_int_arr max_levels in
+    for i = 0 to max_levels - 2 do us level_next i (i + 1) done;
+    us level_next (max_levels - 1) (-1);
+
     let tbl_keys = Array.create ~len:tbl_size (-1) in
     let tbl_vals = Array.create ~len:tbl_size (-1) in
+
+    let price_tbl_keys_bid = Array.create ~len:price_tbl_size (-1) in
+    let price_tbl_vals_bid = Array.create ~len:price_tbl_size (-1) in
+    let price_tbl_keys_ask = Array.create ~len:price_tbl_size (-1) in
+    let price_tbl_vals_ask = Array.create ~len:price_tbl_size (-1) in
+
     { bids = Int.Map.empty; asks = Int.Map.empty;
       volume_at_price = Int.Map.empty;
       orders = Hashtbl.create (module Int);
-      orders_id    = mk_int_arr max_orders;
-      orders_price = mk_int_arr max_orders;
-      orders_qty   = mk_int_arr max_orders;
-      orders_side  = mk_int_arr max_orders;
+      orders_id        = mk_int_arr max_orders;
+      orders_price     = mk_int_arr max_orders;
+      orders_qty       = mk_int_arr max_orders;
+      orders_side      = mk_int_arr max_orders;
+      orders_level_idx = Array.create ~len:max_orders (-1);
       orders_next;
-      orders_prev  = Array.create ~len:max_orders (-1);
-      free_head    = 0;
+      orders_prev      = Array.create ~len:max_orders (-1);
+      free_head        = 0;
       tbl_keys; tbl_vals;
-      bids_price = mk_int_arr max_levels; bids_qty = mk_int_arr max_levels;
-      bids_head  = Array.create ~len:max_levels (-1);
-      bids_tail  = Array.create ~len:max_levels (-1);
-      bids_count = 0;
-      asks_price = mk_int_arr max_levels; asks_qty = mk_int_arr max_levels;
-      asks_head  = Array.create ~len:max_levels (-1);
-      asks_tail  = Array.create ~len:max_levels (-1);
-      asks_count = 0;
-      vol_price  = mk_int_arr max_levels; vol_qty = mk_int_arr max_levels;
-      vol_count  = 0;
-      trades_price = mk_int_arr max_trades;
-      trades_qty   = mk_int_arr max_trades;
-      trades_side  = mk_int_arr max_trades;
-      trades_time  = mk_flt_arr max_trades;
-      trades_count = 0; }
+      price_tbl_keys_bid; price_tbl_vals_bid;
+      price_tbl_keys_ask; price_tbl_vals_ask;
+      level_price      = mk_int_arr max_levels;
+      level_qty        = mk_int_arr max_levels;
+      level_head       = Array.create ~len:max_levels (-1);
+      level_tail       = Array.create ~len:max_levels (-1);
+      level_prev       = Array.create ~len:max_levels (-1);
+      level_next;
+      level_side       = mk_int_arr max_levels;
+      level_free_head  = 0;
+      best_bid_head    = -1;
+      best_ask_head    = -1;
+      bids_count       = 0;
+      asks_count       = 0;
+      vol_price        = mk_int_arr max_levels;
+      vol_qty          = mk_int_arr max_levels;
+      vol_count        = 0;
+      trades_price     = mk_int_arr max_trades;
+      trades_qty       = mk_int_arr max_trades;
+      trades_side      = mk_int_arr max_trades;
+      trades_time      = mk_flt_arr max_trades;
+      trades_count     = 0; }
 
   let reset t =
     t.bids <- Int.Map.empty; t.asks <- Int.Map.empty;
@@ -123,12 +133,28 @@ module Order_book = struct
     t.free_head <- 0;
     for i = 0 to max_orders - 2 do us t.orders_next i (i + 1) done;
     us t.orders_next (max_orders - 1) (-1);
-    for i = 0 to tbl_size - 1 do
-      us t.tbl_keys i (-1); us t.tbl_vals i (-1) done;
-    t.bids_count <- 0; t.asks_count <- 0;
-    t.vol_count  <- 0; t.trades_count <- 0
 
-  (* ── Slot pool ─────────────────────────────────────────────── *)
+    t.level_free_head <- 0;
+    for i = 0 to max_levels - 2 do us t.level_next i (i + 1) done;
+    us t.level_next (max_levels - 1) (-1);
+
+    for i = 0 to tbl_size - 1 do
+      us t.tbl_keys i (-1); us t.tbl_vals i (-1)
+    done;
+
+    for i = 0 to price_tbl_size - 1 do
+      us t.price_tbl_keys_bid i (-1); us t.price_tbl_vals_bid i (-1);
+      us t.price_tbl_keys_ask i (-1); us t.price_tbl_vals_ask i (-1)
+    done;
+
+    t.best_bid_head <- -1;
+    t.best_ask_head <- -1;
+    t.bids_count    <- 0;
+    t.asks_count    <- 0;
+    t.vol_count     <- 0;
+    t.trades_count  <- 0
+
+  (* ── Slot pools ────────────────────────────────────────────── *)
   let[@zero_alloc] alloc_slot t =
     let i = t.free_head in
     if i >= 0 then t.free_head <- ug t.orders_next i;
@@ -138,12 +164,22 @@ module Order_book = struct
     us t.orders_next i t.free_head;
     t.free_head <- i
 
-  (* ── Open-addressed hash table ─────────────────────────────── *)
+  let[@zero_alloc] alloc_level t =
+    let i = t.level_free_head in
+    if i >= 0 then t.level_free_head <- ug t.level_next i;
+    i
+
+  let[@zero_alloc] free_level t i =
+    us t.level_next i t.level_free_head;
+    t.level_free_head <- i
+
+  (* ── Hash Tables ───────────────────────────────────────────── *)
+  (* Order table: order_id -> slot *)
   let[@zero_alloc] tbl_probe keys id =
     let rec go i =
       let k = ug keys i in
       if k = id || k = -1 then i else go ((i + 1) land tbl_mask)
-    in go (id land tbl_mask)
+    in go ((id * 26544357) land tbl_mask)
 
   let[@zero_alloc] tbl_put t id slot =
     let i = tbl_probe t.tbl_keys id in
@@ -165,85 +201,178 @@ module Order_book = struct
       in rehash ((i + 1) land tbl_mask)
     end
 
-  (* ── Binary search on sorted level array ───────────────────── *)
-  (* Returns >= 0 if found, negative insertion point otherwise.  *)
-  (* Zero allocations: pure integer arithmetic.                   *)
-  let[@zero_alloc] bsearch arr count price asc =
-    let lo = ref 0 and hi = ref (count - 1) and res = ref (-(count + 1)) in
-    while !lo <= !hi do
-      let mid = (!lo + !hi) asr 1 in
-      let p   = ug arr mid in
-      if p = price then begin res := mid; lo := !hi + 1 end
-      else if (if asc then p < price else p > price)
-           then lo := mid + 1
-           else begin res := -(mid + 1); hi := mid - 1 end
-    done;
-    !res
+  (* Price table: (side, price) -> level_idx *)
+  let[@zero_alloc] price_tbl_probe keys price =
+    let rec go i =
+      let k = ug keys i in
+      if k = price || k = -1 then i else go ((i + 1) land price_tbl_mask)
+    in go ((price * 26544357) land price_tbl_mask)
 
-  (* ── Level array insert / remove (in-place shift) ─────────── *)
-  let[@zero_alloc] level_insert pa qa ha ta count idx price slot qty =
-    let n = count - 1 in
-    let rec shift i =
-      if i >= idx then begin
-        us pa (i+1) (ug pa i); us qa (i+1) (ug qa i);
-        us ha (i+1) (ug ha i); us ta (i+1) (ug ta i);
-        shift (i - 1)
-      end
-    in
-    shift n;
-    us pa idx price; us qa idx qty; us ha idx slot; us ta idx slot
+  let[@zero_alloc] price_tbl_find t side price =
+    let keys = if side = 1 then t.price_tbl_keys_bid else t.price_tbl_keys_ask in
+    let vals = if side = 1 then t.price_tbl_vals_bid else t.price_tbl_vals_ask in
+    let i = price_tbl_probe keys price in
+    if ug keys i = price then ug vals i else -1
 
-  let[@zero_alloc] level_remove pa qa ha ta count idx =
-    let rec shift i =
-      if i < count - 1 then begin
-        us pa i (ug pa (i+1)); us qa i (ug qa (i+1));
-        us ha i (ug ha (i+1)); us ta i (ug ta (i+1));
-        shift (i + 1)
-      end
-    in
-    shift idx
+  let[@zero_alloc] price_tbl_put t side price level_idx =
+    let keys = if side = 1 then t.price_tbl_keys_bid else t.price_tbl_keys_ask in
+    let vals = if side = 1 then t.price_tbl_vals_bid else t.price_tbl_vals_ask in
+    let i = price_tbl_probe keys price in
+    us keys i price; us vals i level_idx
 
-  (* ── Volume tracker (cold-ish, but still zero-alloc) ───────── *)
-  let[@zero_alloc] record_vol t price qty =
-    let idx = bsearch t.vol_price t.vol_count price true in
-    if idx >= 0
-    then us t.vol_qty idx (ug t.vol_qty idx + qty)
-    else begin
-      let ins = -(idx + 1) in
-      let n   = t.vol_count - 1 in
-      let rec shift i =
-        if i >= ins then begin
-          us t.vol_price (i+1) (ug t.vol_price i);
-          us t.vol_qty   (i+1) (ug t.vol_qty   i);
-          shift (i - 1) end
-      in shift n;
-      us t.vol_price ins price; us t.vol_qty ins qty;
-      t.vol_count <- t.vol_count + 1
+  let[@zero_alloc] price_tbl_del t side price =
+    let keys = if side = 1 then t.price_tbl_keys_bid else t.price_tbl_keys_ask in
+    let vals = if side = 1 then t.price_tbl_vals_bid else t.price_tbl_vals_ask in
+    let i = price_tbl_probe keys price in
+    if ug keys i = price then begin
+      us keys i (-1); us vals i (-1);
+      let rec rehash j =
+        let k = ug keys j in
+        if k <> -1 then begin
+          let v = ug vals j in
+          us keys j (-1); us vals j (-1);
+          let ni = price_tbl_probe keys k in
+          us keys ni k; us vals ni v;
+          rehash ((j + 1) land price_tbl_mask)
+        end
+      in rehash ((i + 1) land price_tbl_mask)
     end
 
-  (* ── Core matching loop ────────────────────────────────────────
-     All arguments passed explicitly — no closure capture, no alloc.
-     `ts` is kept as OxCaml's unboxed `float#` for the entire
-     recursive descent, so the timestamp never gets reboxed on each
-     match step; it's only converted back to a boxed `float` once,
-     at the point it's written into the (boxed) trades_time array.
-     OxCaml's [@zero_alloc] checker verifies the whole function
-     allocates nothing.                                            *)
-  let[@zero_alloc] rec match_loop t side price (ts : float#) remaining =
+  (* ── Active Price Level Doubly Linked List Maintenance ─────── *)
+  let[@zero_alloc] link_level t side level_idx price =
+    us t.level_price level_idx price;
+    us t.level_side  level_idx side;
+    if side = 1 then begin
+      (* Bids: highest price first (best_bid_head) *)
+      let head = t.best_bid_head in
+      if head = -1 then begin
+        t.best_bid_head <- level_idx;
+        us t.level_prev level_idx (-1);
+        us t.level_next level_idx (-1);
+        t.bids_count <- 1
+      end else if price > ug t.level_price head then begin
+        (* New best bid *)
+        us t.level_prev head level_idx;
+        us t.level_next level_idx head;
+        us t.level_prev level_idx (-1);
+        t.best_bid_head <- level_idx;
+        t.bids_count <- t.bids_count + 1
+      end else begin
+        let rec find_pos curr =
+          let nxt = ug t.level_next curr in
+          if nxt = -1 || price > ug t.level_price nxt then curr
+          else find_pos nxt
+        in
+        let pos = find_pos head in
+        let nxt = ug t.level_next pos in
+        us t.level_next pos level_idx;
+        us t.level_prev level_idx pos;
+        us t.level_next level_idx nxt;
+        if nxt <> -1 then us t.level_prev nxt level_idx;
+        t.bids_count <- t.bids_count + 1
+      end
+    end else begin
+      (* Asks: lowest price first (best_ask_head) *)
+      let head = t.best_ask_head in
+      if head = -1 then begin
+        t.best_ask_head <- level_idx;
+        us t.level_prev level_idx (-1);
+        us t.level_next level_idx (-1);
+        t.asks_count <- 1
+      end else if price < ug t.level_price head then begin
+        (* New best ask *)
+        us t.level_prev head level_idx;
+        us t.level_next level_idx head;
+        us t.level_prev level_idx (-1);
+        t.best_ask_head <- level_idx;
+        t.asks_count <- t.asks_count + 1
+      end else begin
+        let rec find_pos curr =
+          let nxt = ug t.level_next curr in
+          if nxt = -1 || price < ug t.level_price nxt then curr
+          else find_pos nxt
+        in
+        let pos = find_pos head in
+        let nxt = ug t.level_next pos in
+        us t.level_next pos level_idx;
+        us t.level_prev level_idx pos;
+        us t.level_next level_idx nxt;
+        if nxt <> -1 then us t.level_prev nxt level_idx;
+        t.asks_count <- t.asks_count + 1
+      end
+    end
+
+  let[@zero_alloc] unlink_level t side level_idx =
+    let prev = ug t.level_prev level_idx in
+    let next = ug t.level_next level_idx in
+    if prev <> -1 then us t.level_next prev next
+    else if side = 1 then t.best_bid_head <- next
+    else                  t.best_ask_head <- next;
+    if next <> -1 then us t.level_prev next prev;
+    if side = 1 then t.bids_count <- t.bids_count - 1
+    else             t.asks_count <- t.asks_count - 1;
+    price_tbl_del t side (ug t.level_price level_idx);
+    free_level t level_idx
+
+  (* ── Order Queue Link / Unlink ─────────────────────────────── *)
+  let[@zero_alloc] link_order_to_level t level_idx order_slot qty =
+    us t.orders_level_idx order_slot level_idx;
+    let tail = ug t.level_tail level_idx in
+    if tail = -1 then begin
+      us t.level_head level_idx order_slot;
+      us t.level_tail level_idx order_slot;
+      us t.orders_prev order_slot (-1);
+      us t.orders_next order_slot (-1)
+    end else begin
+      us t.orders_next tail order_slot;
+      us t.orders_prev order_slot tail;
+      us t.orders_next order_slot (-1);
+      us t.level_tail  level_idx order_slot
+    end;
+    us t.level_qty level_idx (ug t.level_qty level_idx + qty)
+
+  let[@zero_alloc] unlink_order_from_level t level_idx order_slot qty =
+    let prev = ug t.orders_prev order_slot in
+    let next = ug t.orders_next order_slot in
+    if prev <> -1 then us t.orders_next prev next
+    else us t.level_head level_idx next;
+    if next <> -1 then us t.orders_prev next prev
+    else us t.level_tail level_idx prev;
+    let new_qty = ug t.level_qty level_idx - qty in
+    us t.level_qty level_idx new_qty;
+    if new_qty <= 0 || ug t.level_head level_idx = -1 then begin
+      unlink_level t (ug t.orders_side order_slot) level_idx
+    end
+
+  (* ── Volume tracker ────────────────────────────────────────── *)
+  let[@zero_alloc] record_vol t price qty =
+    let count = t.vol_count in
+    let rec find i =
+      if i >= count then -1
+      else if ug t.vol_price i = price then i
+      else find (i + 1)
+    in
+    let idx = find 0 in
+    if idx >= 0 then
+      us t.vol_qty idx (ug t.vol_qty idx + qty)
+    else if count < max_levels then begin
+      us t.vol_price count price;
+      us t.vol_qty   count qty;
+      t.vol_count <- count + 1
+    end
+
+  (* ── Core matching loop ────────────────────────────────────── *)
+  let[@zero_alloc] rec match_loop t side price (ts : float) remaining =
     if remaining <= 0 then 0
     else begin
-      let opp_count = if side = 1 then t.asks_count else t.bids_count in
-      if opp_count = 0 then remaining
+      let opp_head = if side = 1 then t.best_ask_head else t.best_bid_head in
+      if opp_head = -1 then remaining
       else begin
-        let opp_pa  = if side = 1 then t.asks_price else t.bids_price in
-        let opp_qa  = if side = 1 then t.asks_qty   else t.bids_qty   in
-        let opp_ha  = if side = 1 then t.asks_head  else t.bids_head  in
-        let opp_ta  = if side = 1 then t.asks_tail  else t.bids_tail  in
-        let opp_px  = ug opp_pa 0 in
-        let can     = if side = 1 then price >= opp_px else price <= opp_px in
+        let opp_px = ug t.level_price opp_head in
+        let can    = if side = 1 then price >= opp_px else price <= opp_px in
         if not can then remaining
         else begin
-          let slot    = ug opp_ha 0 in
+          let slot    = ug t.level_head opp_head in
           let opp_qty = ug t.orders_qty slot in
           let mq      = if remaining < opp_qty then remaining else opp_qty in
 
@@ -253,44 +382,31 @@ module Order_book = struct
             us t.trades_price ti opp_px;
             us t.trades_qty   ti mq;
             us t.trades_side  ti side;
-            ufs t.trades_time ti (Float_u.to_float ts);
+            ufs t.trades_time ti ts;
             t.trades_count <- ti + 1
           end;
 
           record_vol t opp_px mq;
 
           if opp_qty = mq then begin
-            (* fully matched: unlink level head *)
-            let nxt = ug t.orders_next slot in
-            us opp_ha 0 nxt;
-            if nxt = -1 then begin
-              level_remove opp_pa opp_qa opp_ha opp_ta opp_count 0;
-              if side = 1 then t.asks_count <- t.asks_count - 1
-              else             t.bids_count <- t.bids_count - 1
-            end else begin
-              us t.orders_prev nxt (-1);
-              us opp_qa 0 (ug opp_qa 0 - mq)
-            end;
+            unlink_order_from_level t opp_head slot mq;
             tbl_del t (ug t.orders_id slot);
             free_slot t slot
           end else begin
             us t.orders_qty slot (opp_qty - mq);
-            us opp_qa 0 (ug opp_qa 0 - mq)
+            us t.level_qty  opp_head (ug t.level_qty opp_head - mq)
           end;
           match_loop t side price ts (remaining - mq)
         end
       end
     end
 
-  (* ── add — the hot-path entry point ───────────────────────────
-     Returns count of new trades written to the ring buffer.
-     OxCaml: [@zero_alloc] is a *static* compile-time guarantee here;
-     the compiler will reject this function if it finds any allocation.  *)
+  (* ── add — the hot-path entry point ─────────────────────────── *)
   let[@zero_alloc] add t (msg : Message.t) =
     let side  = msg.side  in
     let price = msg.price in
     let size  = msg.size  in
-    let ts    = msg.time  in  (* already float#, no conversion needed *)
+    let ts    = msg.time  in
     let t0    = t.trades_count in
     let left  = match_loop t side price ts size in
     if left > 0 then begin
@@ -300,70 +416,33 @@ module Order_book = struct
         us t.orders_price slot price;
         us t.orders_qty   slot left;
         us t.orders_side  slot side;
-        us t.orders_next  slot (-1);
-        us t.orders_prev  slot (-1);
         tbl_put t msg.id slot;
-        if side = 1 then begin
-          let idx = bsearch t.bids_price t.bids_count price false in
-          if idx >= 0 then begin
-            let tail = ug t.bids_tail idx in
-            us t.orders_next tail slot;
-            us t.orders_prev slot  tail;
-            us t.bids_tail   idx   slot;
-            us t.bids_qty    idx  (ug t.bids_qty idx + left)
-          end else begin
-            let ins = -(idx + 1) in
-            level_insert t.bids_price t.bids_qty t.bids_head t.bids_tail
-                         t.bids_count ins price slot left;
-            t.bids_count <- t.bids_count + 1
-          end
+        let level_idx = price_tbl_find t side price in
+        if level_idx >= 0 then begin
+          link_order_to_level t level_idx slot left
         end else begin
-          let idx = bsearch t.asks_price t.asks_count price true in
-          if idx >= 0 then begin
-            let tail = ug t.asks_tail idx in
-            us t.orders_next tail slot;
-            us t.orders_prev slot  tail;
-            us t.asks_tail   idx   slot;
-            us t.asks_qty    idx  (ug t.asks_qty idx + left)
-          end else begin
-            let ins = -(idx + 1) in
-            level_insert t.asks_price t.asks_qty t.asks_head t.asks_tail
-                         t.asks_count ins price slot left;
-            t.asks_count <- t.asks_count + 1
+          let new_level = alloc_level t in
+          if new_level >= 0 then begin
+            us t.level_head new_level (-1);
+            us t.level_tail new_level (-1);
+            us t.level_qty  new_level 0;
+            link_level t side new_level price;
+            price_tbl_put t side price new_level;
+            link_order_to_level t new_level slot left
           end
         end
       end
     end;
     t.trades_count - t0
 
-  (* ── remove — also zero-alloc ──────────────────────────────── *)
+  (* ── remove — also O(1) zero-alloc ─────────────────────────── *)
   let[@zero_alloc] remove t id =
     let ti = tbl_probe t.tbl_keys id in
     let slot = ug t.tbl_vals ti in
     if slot >= 0 then begin
-      let price = ug t.orders_price slot in
-      let qty   = ug t.orders_qty   slot in
-      let side  = ug t.orders_side  slot in
-      let pa    = if side = 1 then t.bids_price else t.asks_price in
-      let qa    = if side = 1 then t.bids_qty   else t.asks_qty   in
-      let ha    = if side = 1 then t.bids_head  else t.asks_head  in
-      let ta    = if side = 1 then t.bids_tail  else t.asks_tail  in
-      let cnt   = if side = 1 then t.bids_count else t.asks_count in
-      let idx   = bsearch pa cnt price (side <> 1) in
-      if idx >= 0 then begin
-        let prev = ug t.orders_prev slot in
-        let next = ug t.orders_next slot in
-        (if prev >= 0 then us t.orders_next prev next
-         else us ha idx next);
-        (if next >= 0 then us t.orders_prev next prev
-         else us ta idx prev);
-        let nq = ug qa idx - qty in
-        if nq <= 0 || (next < 0 && prev < 0) then begin
-          level_remove pa qa ha ta cnt idx;
-          if side = 1 then t.bids_count <- t.bids_count - 1
-          else             t.asks_count <- t.asks_count - 1
-        end else us qa idx nq
-      end;
+      let level_idx = ug t.orders_level_idx slot in
+      let qty       = ug t.orders_qty slot in
+      unlink_order_from_level t level_idx slot qty;
       tbl_del t id;
       free_slot t slot
     end
@@ -371,14 +450,20 @@ module Order_book = struct
   (* ── Cold-path helpers: sync maps for UI ──────────────────── *)
   let sync_maps t =
     let bids = ref Int.Map.empty in
-    for i = 0 to t.bids_count - 1 do
-      bids := Map.set !bids ~key:(ug t.bids_price i) ~data:(ug t.bids_qty i)
-    done;
+    let rec go_bids curr =
+      if curr >= 0 then begin
+        bids := Map.set !bids ~key:(ug t.level_price curr) ~data:(ug t.level_qty curr);
+        go_bids (ug t.level_next curr)
+      end
+    in go_bids t.best_bid_head;
     t.bids <- !bids;
     let asks = ref Int.Map.empty in
-    for i = 0 to t.asks_count - 1 do
-      asks := Map.set !asks ~key:(ug t.asks_price i) ~data:(ug t.asks_qty i)
-    done;
+    let rec go_asks curr =
+      if curr >= 0 then begin
+        asks := Map.set !asks ~key:(ug t.level_price curr) ~data:(ug t.level_qty curr);
+        go_asks (ug t.level_next curr)
+      end
+    in go_asks t.best_ask_head;
     t.asks <- !asks;
     let vol = ref Int.Map.empty in
     for i = 0 to t.vol_count - 1 do
@@ -413,28 +498,38 @@ module Order_book = struct
     let _n = add t msg in
     pop_new_trades t
 
-  (* ── Query helpers (cold path) ─────────────────────────────── *)
+  (* ── Query helpers ─────────────────────────────────────────── *)
   let get_spread t =
-    if t.bids_count > 0 && t.asks_count > 0
-    then Some (ug t.asks_price 0 - ug t.bids_price 0)
+    if t.best_bid_head >= 0 && t.best_ask_head >= 0
+    then Some (ug t.level_price t.best_ask_head - ug t.level_price t.best_bid_head)
     else None
 
   let get_mid_price t =
-    if t.bids_count > 0 && t.asks_count > 0
-    then Some ((ug t.asks_price 0 + ug t.bids_price 0) / 2)
+    if t.best_bid_head >= 0 && t.best_ask_head >= 0
+    then Some ((ug t.level_price t.best_ask_head + ug t.level_price t.best_bid_head) / 2)
     else None
 
   let[@zero_alloc] get_total_bid_volume t =
     let v = ref 0 in
-    for i = 0 to t.bids_count - 1 do v := !v + ug t.bids_qty i done; !v
+    let rec go curr =
+      if curr >= 0 then begin
+        v := !v + ug t.level_qty curr;
+        go (ug t.level_next curr)
+      end
+    in go t.best_bid_head; !v
 
   let[@zero_alloc] get_total_ask_volume t =
     let v = ref 0 in
-    for i = 0 to t.asks_count - 1 do v := !v + ug t.asks_qty i done; !v
+    let rec go curr =
+      if curr >= 0 then begin
+        v := !v + ug t.level_qty curr;
+        go (ug t.level_next curr)
+      end
+    in go t.best_ask_head; !v
 
   let get_best_bid_ask t =
-    let bid = if t.bids_count > 0 then Some (ug t.bids_price 0, ug t.bids_qty 0) else None in
-    let ask = if t.asks_count > 0 then Some (ug t.asks_price 0, ug t.asks_qty 0) else None in
+    let bid = if t.best_bid_head >= 0 then Some (ug t.level_price t.best_bid_head, ug t.level_qty t.best_bid_head) else None in
+    let ask = if t.best_ask_head >= 0 then Some (ug t.level_price t.best_ask_head, ug t.level_qty t.best_ask_head) else None in
     (bid, ask)
 
   let[@zero_alloc] get_imbalance_ratio t =
@@ -451,17 +546,16 @@ module Order_book = struct
     if !tv = 0 then 0 else !ws / !tv
 
   let[@zero_alloc] validate t =
-    not (t.bids_count > 0 && t.asks_count > 0
-         && ug t.bids_price 0 >= ug t.asks_price 0)
+    not (t.best_bid_head >= 0 && t.best_ask_head >= 0
+         && ug t.level_price t.best_bid_head >= ug t.level_price t.best_ask_head)
 
   let get_depth_snapshot t ~num_levels =
-    let take pa qa cnt n =
-      let lim = min n cnt in
-      let acc = ref [] in
-      for i = lim - 1 downto 0 do
-        acc := (ug pa i, ug qa i) :: !acc
-      done; !acc
+    let collect head =
+      let rec go curr count acc =
+        if curr >= 0 && count < num_levels then
+          go (ug t.level_next curr) (count + 1) ((ug t.level_price curr, ug t.level_qty curr) :: acc)
+        else List.rev acc
+      in go head 0 []
     in
-    (take t.asks_price t.asks_qty t.asks_count num_levels,
-     take t.bids_price t.bids_qty t.bids_count num_levels)
+    (collect t.best_ask_head, collect t.best_bid_head)
 end

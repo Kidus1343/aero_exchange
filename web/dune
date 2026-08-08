@@ -7,7 +7,6 @@
   bonsai.web
   aero_lib)
  (ocamlopt_flags (:standard -O3 -unbox-closures))
- (flags (:standard -extension-universe stable))
  (preprocess
   (pps
    ppx_jane

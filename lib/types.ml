@@ -12,7 +12,7 @@ open Core
    that's the only field that benefits from OxCaml's float#. ── *)
 module Message = struct
   type t = {
-    time  : float#;
+    time  : float;
     kind  : int;
     id    : int;
     size  : int;
@@ -21,9 +21,9 @@ module Message = struct
   }
 
   let create ~time ~kind ~id ~size ~price ~side =
-    { time = Float_u.of_float time; kind; id; size; price; side }
+    { time; kind; id; size; price; side }
 
-  let get_time  m = Float_u.to_float m.time
+  let get_time  m = m.time
   let get_kind  m = m.kind
   let get_id    m = m.id
   let get_size  m = m.size
@@ -33,7 +33,7 @@ module Message = struct
   let of_string line =
     match String.split line ~on:',' with
     | [t; k; id; s; p; sd] ->
-      { time  = Float_u.of_float (Float.of_string t);
+      { time  = Float.of_string t;
         kind  = Int.of_string k;
         id    = Int.of_string id;
         size  = Int.of_string s;
@@ -43,7 +43,7 @@ module Message = struct
 
   let sexp_of_t m =
     Sexplib.Sexp.List [
-      Sexplib.Sexp.Atom (Float.to_string (Float_u.to_float m.time));
+      Sexplib.Sexp.Atom (Float.to_string m.time);
       Sexplib.Sexp.Atom (Int.to_string m.kind);
       Sexplib.Sexp.Atom (Int.to_string m.id);
       Sexplib.Sexp.Atom (Int.to_string m.size);

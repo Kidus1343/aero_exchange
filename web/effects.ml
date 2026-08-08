@@ -18,7 +18,7 @@ let now_seconds () : float =
 (* Mutable simulation state *)
 let running_ref = ref true
 let speed_ref = ref 100
-let volatility_ref = ref 1
+let volatility_ref = ref 3
 let interval_id_ref : Js_of_ocaml.Js.number option ref = ref None
 let base_mid_ref = ref 50000
 
@@ -31,13 +31,14 @@ let start_timer inject =
 
   let cb = Js.wrap_callback (fun () ->
     if !running_ref then begin
-      (* occasional drift based on volatility_ref *)
-      if Random.int_incl 1 10 <= !volatility_ref then 
-        base_mid_ref := !base_mid_ref + (Random.int_incl (-5) 5);
+      (* dynamic random walk drift based on volatility *)
+      if Random.int_incl 1 3 = 1 then
+        base_mid_ref := !base_mid_ref + (Random.int_incl (-8) 8) * !volatility_ref;
+
       let is_ask = Random.bool () in
       let target_id = Random.int_incl 1 20000 in
       let operation = Random.int_incl 1 2 in
-      let offset = (Random.int_incl 1 10) * 10 in
+      let offset = (Random.int_incl 1 8) * 10 in
       let price = if is_ask then !base_mid_ref + offset else !base_mid_ref - offset in
       let size = if operation = 1 then Random.int_incl 1 40 else 0 in
       let now = now_seconds () in
@@ -45,8 +46,7 @@ let start_timer inject =
           ~size ~price ~side:(if is_ask then 2 else 1)
       in
       ignore (Ui_effect.Expert.handle (inject (Action.Process_Message msg)));
-      (* update base_mid in the Bonsai model occasionally for UI visibility *)
-      if Random.int_incl 1 5 = 1 then ignore (Ui_effect.Expert.handle (inject (Action.Update_Base_Mid !base_mid_ref)));
+      ignore (Ui_effect.Expert.handle (inject (Action.Update_Base_Mid !base_mid_ref)));
     end;
     Js._false)
   in

@@ -2,5 +2,4 @@
  (name aero_lib)
  (libraries core)
  (ocamlopt_flags (:standard -O3 -unbox-closures))
- (flags (:standard -extension-universe stable))
  (preprocess (pps ppx_jane)))
