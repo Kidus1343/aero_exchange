@@ -175,38 +175,47 @@ module Order_book = struct
 
   (* ── Hash Tables ───────────────────────────────────────────── *)
   (* Order table: order_id -> slot *)
+  let[@zero_alloc] rec tbl_probe_loop keys id i =
+    let k = ug keys i in
+    if k = id || k = -1 then i
+    else tbl_probe_loop keys id ((i + 1) land tbl_mask)
+
   let[@zero_alloc] tbl_probe keys id =
-    let rec go i =
-      let k = ug keys i in
-      if k = id || k = -1 then i else go ((i + 1) land tbl_mask)
-    in go ((id * 26544357) land tbl_mask)
+    tbl_probe_loop keys id ((id * 26544357) land tbl_mask)
 
   let[@zero_alloc] tbl_put t id slot =
     let i = tbl_probe t.tbl_keys id in
-    us t.tbl_keys i id; us t.tbl_vals i slot
+    us t.tbl_keys i id;
+    us t.tbl_vals i slot
+
+  let[@zero_alloc] rec tbl_del_rehash keys vals j =
+    let k = ug keys j in
+    if k <> -1 then begin
+      let v = ug vals j in
+      us keys j (-1);
+      us vals j (-1);
+      let ni = tbl_probe keys k in
+      us keys ni k;
+      us vals ni v;
+      tbl_del_rehash keys vals ((j + 1) land tbl_mask)
+    end
 
   let[@zero_alloc] tbl_del t id =
     let i = tbl_probe t.tbl_keys id in
     if ug t.tbl_keys i = id then begin
-      us t.tbl_keys i (-1); us t.tbl_vals i (-1);
-      let rec rehash j =
-        let k = ug t.tbl_keys j in
-        if k <> -1 then begin
-          let v = ug t.tbl_vals j in
-          us t.tbl_keys j (-1); us t.tbl_vals j (-1);
-          let ni = tbl_probe t.tbl_keys k in
-          us t.tbl_keys ni k; us t.tbl_vals ni v;
-          rehash ((j + 1) land tbl_mask)
-        end
-      in rehash ((i + 1) land tbl_mask)
+      us t.tbl_keys i (-1);
+      us t.tbl_vals i (-1);
+      tbl_del_rehash t.tbl_keys t.tbl_vals ((i + 1) land tbl_mask)
     end
 
   (* Price table: (side, price) -> level_idx *)
+  let[@zero_alloc] rec price_tbl_probe_loop keys price i =
+    let k = ug keys i in
+    if k = price || k = -1 then i
+    else price_tbl_probe_loop keys price ((price * 26544357) land price_tbl_mask)
+
   let[@zero_alloc] price_tbl_probe keys price =
-    let rec go i =
-      let k = ug keys i in
-      if k = price || k = -1 then i else go ((i + 1) land price_tbl_mask)
-    in go ((price * 26544357) land price_tbl_mask)
+    price_tbl_probe_loop keys price ((price * 26544357) land price_tbl_mask)
 
   let[@zero_alloc] price_tbl_find t side price =
     let keys = if side = 1 then t.price_tbl_keys_bid else t.price_tbl_keys_ask in
@@ -218,27 +227,42 @@ module Order_book = struct
     let keys = if side = 1 then t.price_tbl_keys_bid else t.price_tbl_keys_ask in
     let vals = if side = 1 then t.price_tbl_vals_bid else t.price_tbl_vals_ask in
     let i = price_tbl_probe keys price in
-    us keys i price; us vals i level_idx
+    us keys i price;
+    us vals i level_idx
+
+  let[@zero_alloc] rec price_tbl_del_rehash keys vals j =
+    let k = ug keys j in
+    if k <> -1 then begin
+      let v = ug vals j in
+      us keys j (-1);
+      us vals j (-1);
+      let ni = price_tbl_probe keys k in
+      us keys ni k;
+      us vals ni v;
+      price_tbl_del_rehash keys vals ((j + 1) land price_tbl_mask)
+    end
 
   let[@zero_alloc] price_tbl_del t side price =
     let keys = if side = 1 then t.price_tbl_keys_bid else t.price_tbl_keys_ask in
     let vals = if side = 1 then t.price_tbl_vals_bid else t.price_tbl_vals_ask in
     let i = price_tbl_probe keys price in
     if ug keys i = price then begin
-      us keys i (-1); us vals i (-1);
-      let rec rehash j =
-        let k = ug keys j in
-        if k <> -1 then begin
-          let v = ug vals j in
-          us keys j (-1); us vals j (-1);
-          let ni = price_tbl_probe keys k in
-          us keys ni k; us vals ni v;
-          rehash ((j + 1) land price_tbl_mask)
-        end
-      in rehash ((i + 1) land price_tbl_mask)
+      us keys i (-1);
+      us vals i (-1);
+      price_tbl_del_rehash keys vals ((i + 1) land price_tbl_mask)
     end
 
   (* ── Active Price Level Doubly Linked List Maintenance ─────── *)
+  let[@zero_alloc] rec find_bid_pos level_next level_price curr price =
+    let nxt = ug level_next curr in
+    if nxt = -1 || price > ug level_price nxt then curr
+    else find_bid_pos level_next level_price nxt price
+
+  let[@zero_alloc] rec find_ask_pos level_next level_price curr price =
+    let nxt = ug level_next curr in
+    if nxt = -1 || price < ug level_price nxt then curr
+    else find_ask_pos level_next level_price nxt price
+
   let[@zero_alloc] link_level t side level_idx price =
     us t.level_price level_idx price;
     us t.level_side  level_idx side;
@@ -258,12 +282,7 @@ module Order_book = struct
         t.best_bid_head <- level_idx;
         t.bids_count <- t.bids_count + 1
       end else begin
-        let rec find_pos curr =
-          let nxt = ug t.level_next curr in
-          if nxt = -1 || price > ug t.level_price nxt then curr
-          else find_pos nxt
-        in
-        let pos = find_pos head in
+        let pos = find_bid_pos t.level_next t.level_price head price in
         let nxt = ug t.level_next pos in
         us t.level_next pos level_idx;
         us t.level_prev level_idx pos;
@@ -287,12 +306,7 @@ module Order_book = struct
         t.best_ask_head <- level_idx;
         t.asks_count <- t.asks_count + 1
       end else begin
-        let rec find_pos curr =
-          let nxt = ug t.level_next curr in
-          if nxt = -1 || price < ug t.level_price nxt then curr
-          else find_pos nxt
-        in
-        let pos = find_pos head in
+        let pos = find_ask_pos t.level_next t.level_price head price in
         let nxt = ug t.level_next pos in
         us t.level_next pos level_idx;
         us t.level_prev level_idx pos;
@@ -345,14 +359,14 @@ module Order_book = struct
     end
 
   (* ── Volume tracker ────────────────────────────────────────── *)
+  let[@zero_alloc] rec find_vol vol_price count price i =
+    if i >= count then -1
+    else if ug vol_price i = price then i
+    else find_vol vol_price count price (i + 1)
+
   let[@zero_alloc] record_vol t price qty =
     let count = t.vol_count in
-    let rec find i =
-      if i >= count then -1
-      else if ug t.vol_price i = price then i
-      else find (i + 1)
-    in
-    let idx = find 0 in
+    let idx = find_vol t.vol_price count price 0 in
     if idx >= 0 then
       us t.vol_qty idx (ug t.vol_qty idx + qty)
     else if count < max_levels then begin
@@ -362,9 +376,11 @@ module Order_book = struct
     end
 
   (* ── Core matching loop ────────────────────────────────────── *)
-  let[@zero_alloc] rec match_loop t side price (ts : float) remaining =
+  let[@zero_alloc] rec match_loop t (msg : Message.t) remaining =
     if remaining <= 0 then 0
     else begin
+      let side = msg.side in
+      let price = msg.price in
       let opp_head = if side = 1 then t.best_ask_head else t.best_bid_head in
       if opp_head = -1 then remaining
       else begin
@@ -382,7 +398,7 @@ module Order_book = struct
             us t.trades_price ti opp_px;
             us t.trades_qty   ti mq;
             us t.trades_side  ti side;
-            ufs t.trades_time ti ts;
+            ufs t.trades_time ti msg.time;
             t.trades_count <- ti + 1
           end;
 
@@ -396,22 +412,20 @@ module Order_book = struct
             us t.orders_qty slot (opp_qty - mq);
             us t.level_qty  opp_head (ug t.level_qty opp_head - mq)
           end;
-          match_loop t side price ts (remaining - mq)
+          match_loop t msg (remaining - mq)
         end
       end
     end
 
   (* ── add — the hot-path entry point ─────────────────────────── *)
   let[@zero_alloc] add t (msg : Message.t) =
-    let side  = msg.side  in
-    let price = msg.price in
-    let size  = msg.size  in
-    let ts    = msg.time  in
     let t0    = t.trades_count in
-    let left  = match_loop t side price ts size in
+    let left  = match_loop t msg msg.size in
     if left > 0 then begin
       let slot = alloc_slot t in
       if slot >= 0 then begin
+        let side  = msg.side in
+        let price = msg.price in
         us t.orders_id    slot msg.id;
         us t.orders_price slot price;
         us t.orders_qty   slot left;
@@ -498,16 +512,37 @@ module Order_book = struct
     let _n = add t msg in
     pop_new_trades t
 
-  (* ── Query helpers ─────────────────────────────────────────── *)
-  let get_spread t =
+  (* ── Zero-alloc unboxed query functions (sentinel -1 when absent) ── *)
+  let[@zero_alloc] get_spread_unboxed t =
     if t.best_bid_head >= 0 && t.best_ask_head >= 0
-    then Some (ug t.level_price t.best_ask_head - ug t.level_price t.best_bid_head)
-    else None
+    then ug t.level_price t.best_ask_head - ug t.level_price t.best_bid_head
+    else -1
+
+  let[@zero_alloc] get_mid_price_unboxed t =
+    if t.best_bid_head >= 0 && t.best_ask_head >= 0
+    then (ug t.level_price t.best_ask_head + ug t.level_price t.best_bid_head) / 2
+    else -1
+
+  let[@zero_alloc] get_best_bid_price t =
+    if t.best_bid_head >= 0 then ug t.level_price t.best_bid_head else -1
+
+  let[@zero_alloc] get_best_bid_qty t =
+    if t.best_bid_head >= 0 then ug t.level_qty t.best_bid_head else 0
+
+  let[@zero_alloc] get_best_ask_price t =
+    if t.best_ask_head >= 0 then ug t.level_price t.best_ask_head else -1
+
+  let[@zero_alloc] get_best_ask_qty t =
+    if t.best_ask_head >= 0 then ug t.level_qty t.best_ask_head else 0
+
+  (* ── Cold-path query helpers with Option / Tuple (UI / Bonsai) ── *)
+  let get_spread t =
+    let s = get_spread_unboxed t in
+    if s >= 0 then Some s else None
 
   let get_mid_price t =
-    if t.best_bid_head >= 0 && t.best_ask_head >= 0
-    then Some ((ug t.level_price t.best_ask_head + ug t.level_price t.best_bid_head) / 2)
-    else None
+    let m = get_mid_price_unboxed t in
+    if m >= 0 then Some m else None
 
   let[@zero_alloc] get_total_bid_volume t =
     let v = ref 0 in
@@ -528,8 +563,10 @@ module Order_book = struct
     in go t.best_ask_head; !v
 
   let get_best_bid_ask t =
-    let bid = if t.best_bid_head >= 0 then Some (ug t.level_price t.best_bid_head, ug t.level_qty t.best_bid_head) else None in
-    let ask = if t.best_ask_head >= 0 then Some (ug t.level_price t.best_ask_head, ug t.level_qty t.best_ask_head) else None in
+    let bid_px = get_best_bid_price t in
+    let bid = if bid_px >= 0 then Some (bid_px, get_best_bid_qty t) else None in
+    let ask_px = get_best_ask_price t in
+    let ask = if ask_px >= 0 then Some (ask_px, get_best_ask_qty t) else None in
     (bid, ask)
 
   let[@zero_alloc] get_imbalance_ratio t =

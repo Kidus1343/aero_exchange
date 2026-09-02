@@ -62,6 +62,14 @@ module Order_book : sig
   val sync_maps       : t -> unit
   val pop_new_trades  : t -> Trade.t list
 
+  (** Zero-alloc unboxed queries (returns sentinel -1 / 0 when empty) *)
+  val get_spread_unboxed    : t -> int
+  val get_mid_price_unboxed : t -> int
+  val get_best_bid_price    : t -> int
+  val get_best_bid_qty      : t -> int
+  val get_best_ask_price    : t -> int
+  val get_best_ask_qty      : t -> int
+
   val get_spread          : t -> int option
   val get_mid_price       : t -> int option
   val get_total_bid_volume : t -> int

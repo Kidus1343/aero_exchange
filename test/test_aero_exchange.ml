@@ -105,6 +105,7 @@ let test_order_removal () =
 let test_get_spread () =
   print_endline "\n=== Test: Get Spread ===";
   let book = Order_book.create () in
+  assert (Order_book.get_spread_unboxed book = -1);
   let bid_msg = create_message ~time:100.0 ~kind:1 ~id:1 ~size:100 ~price:50000 ~side:1 in
   let ask_msg = create_message ~time:101.0 ~kind:1 ~id:2 ~size:100 ~price:50010 ~side:2 in
   let _ = Order_book.add book bid_msg in
@@ -112,11 +113,13 @@ let test_get_spread () =
   
   let spread = Order_book.get_spread book in
   assert (Option.value spread ~default:(-1) = 10);
-  print_endline "✓ Spread calculation works"
+  assert (Order_book.get_spread_unboxed book = 10);
+  print_endline "✓ Spread calculation works (boxed & unboxed)"
 
 let test_get_mid_price () =
   print_endline "\n=== Test: Get Mid Price ===";
   let book = Order_book.create () in
+  assert (Order_book.get_mid_price_unboxed book = -1);
   let bid_msg = create_message ~time:100.0 ~kind:1 ~id:1 ~size:100 ~price:50000 ~side:1 in
   let ask_msg = create_message ~time:101.0 ~kind:1 ~id:2 ~size:100 ~price:50010 ~side:2 in
   let _ = Order_book.add book bid_msg in
@@ -124,7 +127,12 @@ let test_get_mid_price () =
   
   let mid = Order_book.get_mid_price book in
   assert (Option.value mid ~default:(-1) = 50005);
-  print_endline "✓ Mid-price calculation works"
+  assert (Order_book.get_mid_price_unboxed book = 50005);
+  assert (Order_book.get_best_bid_price book = 50000);
+  assert (Order_book.get_best_bid_qty book = 100);
+  assert (Order_book.get_best_ask_price book = 50010);
+  assert (Order_book.get_best_ask_qty book = 100);
+  print_endline "✓ Mid-price & best bid/ask unboxed calculation works"
 
 let test_get_volumes () =
   print_endline "\n=== Test: Get Volumes ===";
